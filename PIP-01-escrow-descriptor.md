@@ -28,6 +28,7 @@ The escrow descriptor tells counterparties and operators:
 - what the funding and release rules are
 - how the escrow instance is referenced
 - what timeout and dispute assumptions apply
+- whether and how the escrow may be invoked as a standalone service
 
 ## Minimum Content
 
@@ -43,6 +44,157 @@ Minimum expected fields:
 - `dispute_rules`
 - `reference_format`
 - `updated_at`
+
+## Standalone Sufficiency
+
+An escrow descriptor has two intended use levels:
+
+- **compatibility and discovery** — the descriptor declares which networks, assets, reference formats, funding rules, release rules, and dispute policy an escrow supports, so that agents and swaps can select it
+- **standalone operation** — the descriptor additionally declares the public service interface required to instantiate and operate an escrow instance without out-of-band negotiation
+
+A descriptor that omits the `service` block (see Service Interface) is sufficient for compatibility and discovery and for use inside Pontmore swap flows where the swap state machine in [PIP-02-swap-state-machine.md](./PIP-02-swap-state-machine.md) carries execution. It is NOT sufficient for a standalone application to create, fund, observe, release, or refund an escrow instance on its own.
+
+A descriptor that includes a `service` block is intended to be sufficient for standalone application use. When `service` is present, the descriptor is the primary source of truth for the public escrow service interface.
+
+The minimum content fields in Minimum Content remain required in both use levels. The `service` block is the additional, optional field that upgrades a descriptor from discovery-only to standalone-sufficient.
+
+## Service Interface
+
+The `service` content field advertises the public interface that a standalone application uses to instantiate and operate an escrow instance. It is OPTIONAL at the descriptor level. When present, it MUST conform to this section.
+
+### Service Fields
+
+When `service` is present, it MUST include:
+
+- `transport`
+  - non-empty array of supported service transports
+  - canonical first transport is `https`
+- `interface`
+  - interface and version identifier; example: `pontmore_escrow_http_v1`
+- `endpoint`
+  - base service URL for HTTPS transports
+- `auth`
+  - non-empty array of supported authentication methods; see Authentication
+- `operations`
+  - non-empty array of supported escrow instance operations; see Operations
+- `funding_model`
+  - multi-party funding model; see Funding Model
+- `release_decisions`
+  - non-empty array of accepted release-decision formats; see Release Decisions
+
+`service` SHOULD include:
+
+- `schema_url`
+  - machine-readable schema URL, for example an OpenAPI document or another protocol-native schema
+
+### Authentication
+
+For HTTPS transports, the recommended authentication method is `nostr_http_auth`, defined as NIP-98 (Nostr HTTP Authentication).
+
+- a participant authenticates by signing each HTTP request with its Nostr key, producing a NIP-98 authorization header
+- identity is the participant's Nostr pubkey; the descriptor and escrow operator MUST NOT require published bearer secrets for public protocol operations
+- at `create`, the requesting participant supplies the set of participant Nostr pubkeys bound to the escrow instance; the operator binds subsequent `fund_status`, `release`, `refund`, and `cancel` operations to those pubkeys
+- each participant signs its own operations; threshold release decisions require signatures from the declared threshold of bound participants
+- operators MAY require additional private operator-layer authorization for back-office actions, but such authorization is an operator overlay and MUST NOT be advertised as a public descriptor field
+
+### Operations
+
+The canonical escrow instance operation vocabulary is:
+
+- `create` — open a new escrow instance and bind its participant pubkeys
+- `fund_status` — observe the funding state of a participant's side
+- `release` — request release of the escrowed amount to the winner or payee
+- `refund` — request refund of the escrowed amount to its funder
+- `cancel` — request cancellation of an unfunded or unresolved escrow instance
+
+Operations not in this vocabulary MAY be advertised but are non-canonical and MUST be documented by the operator's referenced schema.
+
+### Funding Model
+
+The `funding_model` field declares how many participants fund a single escrow instance:
+
+- `single_funder` — one participant funds the escrow
+- `two_party` — two participants each fund a side of the same escrow instance
+- `n_of_m` — M of N declared participants must fund for the escrow to become active
+
+### Release Decisions
+
+`release_decisions` advertises the generic decision formats the operator accepts to authorize a `release` or `refund`. The minimum canonical vocabulary is:
+
+- `mutual_consent` — release or refund authorized by all declared participants
+- `operator_decision` — release or refund authorized by the escrow operator as arbiter
+- `oracle_signature` — release or refund authorized by a signature from a referenced oracle
+- `application_signed_result` — release or refund authorized by a signed result from the originating application
+- `threshold_participant_signatures` — release or refund authorized by a threshold of participant signatures
+
+`release_rules.release_trigger` states the public condition a specific escrow subtype requires before release; `service.release_decisions` states the generic decision formats the service accepts to satisfy such a trigger. Swap-specific triggers such as `counterparty_fiat_payment_confirmed` remain valid for Pontmore swap flows. For standalone non-swap use, `release_decisions` is the generic vocabulary an application relies on.
+
+### Public/Private Boundary
+
+The `service` block advertises only the public service interface. The following MUST NOT appear in the descriptor:
+
+- wallet identifiers
+- custody backend identifiers
+- private payment credentials
+- internal account details
+- private routing state
+- operator-internal API keys or bearer secrets
+
+These are operator-layer implementation details. Their absence is what allows the same descriptor to be published openly without exposing operator internals.
+
+### Example: Two-Party Dice Game
+
+A standalone dice game discovers a published escrow descriptor and operates an escrow instance without a Pontmore swap:
+
+```json
+{
+  "version": 1,
+  "escrow_type": "custodial_escrow",
+  "networks": ["lightning"],
+  "funding_rules": {
+    "required_confirmation": "invoice_paid"
+  },
+  "release_rules": {
+    "release_trigger": "application_signed_result",
+    "refund_trigger": "timeout_or_mutual_consent"
+  },
+  "dispute_rules": {
+    "policy": "operator_resolved"
+  },
+  "reference_format": "bolt11_or_custodial_escrow_reference",
+  "custody_authority": "escrow_operator",
+  "release_authority": "escrow_operator",
+  "refund_authority": "escrow_operator",
+  "implementations": [
+    {
+      "network": "lightning",
+      "invoice_asset": "BTC",
+      "invoice_currency": "sats",
+      "invoice_amount_rule": "exact",
+      "payout_network": "lightning"
+    }
+  ],
+  "service": {
+    "transport": ["https"],
+    "interface": "pontmore_escrow_http_v1",
+    "endpoint": "https://escrow.example.com/pontmore/v1",
+    "schema_url": "https://escrow.example.com/pontmore/v1/openapi.json",
+    "auth": ["nostr_http_auth"],
+    "operations": ["create", "fund_status", "release", "refund", "cancel"],
+    "funding_model": "two_party",
+    "release_decisions": ["application_signed_result", "mutual_consent", "operator_decision"]
+  },
+  "updated_at": 1775559028
+}
+```
+
+The flow validates the descriptor model:
+
+1. the application discovers the descriptor and reads `service`
+2. both participants call `create` over HTTPS, authenticated with `nostr_http_auth`, binding both participant pubkeys to one escrow instance with `funding_model` `two_party`
+3. each participant funds its side; the application reads `fund_status` until both sides are confirmed
+4. the application commits a verifiable result (the die roll) and submits an `application_signed_result` release decision
+5. the escrow releases both locked amounts to the winner via `release`, or refunds via `refund` if the result is unresolved at timeout
 
 ## Network Declaration
 
@@ -382,8 +534,17 @@ Every agent profile should declare:
 
 That declared escrow must be usable without out-of-band negotiation at swap time.
 
-## Open Question
+For standalone (non-swap) use, an application SHOULD select a descriptor whose `service` block is present and whose advertised `operations`, `funding_model`, and `release_decisions` match the application's needs. A descriptor without `service` MUST NOT be treated as standalone-sufficient.
+
+## Open Questions
 
 Additional escrow mechanisms beyond `lightning_hold_invoice`, `custodial_escrow`, and `cashu_escrow` may still need their own canonical subtype-specific schemas.
 
 `cashu_escrow` introduces a dependency on a specific Cashu mint. Mint trust, mint selection, and mint failure modes are implementation assumptions rather than Pontmore protocol state. [Nimdolf](https://github.com/cashubtc/nuts/pull/390) is a possible future direction for mint liveness failover, but this proposal does not bind to it.
+
+Open questions for the service interface:
+
+- whether the service interface should remain in PIP-01 or split into a dedicated escrow service interface PIP as the operation set and transport matrix grow
+- whether transports beyond HTTPS should be canonically defined, or left to descriptor extensions
+- whether Nostr HTTP Auth (NIP-98) should be the single recommended authentication method, or one of several equally valid methods
+- the minimum generic release-decision vocabulary beyond `mutual_consent`, `operator_decision`, `oracle_signature`, `application_signed_result`, and `threshold_participant_signatures`
