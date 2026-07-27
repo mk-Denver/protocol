@@ -78,13 +78,16 @@ When `service` is present, it MUST include:
 - `auth`
   - non-empty array of supported authentication methods; see Authentication
 - `operations`
-  - non-empty array of supported escrow instance operations; see Operations
+  - MUST include `create`, `funding_instructions`, `fund_status`, `release`, `refund`, and `cancel` for standalone service use
 - `funding_model`
   - multi-party funding model; see Funding Model
 - `release_decisions`
   - non-empty array of accepted release-decision formats; see Release Decisions
 - `schema_url`
   - mandatory machine-readable schema URL for the normative wire contract; see Wire Contract
+  - MUST use `https://`
+  - MUST resolve only to an immutable or versioned schema artifact, preferably with a digest or immutable URL
+  - MUST NOT point to a private, loopback, link-local, multicast, or otherwise disallowed network destination
 
 ### Authentication
 
@@ -92,7 +95,9 @@ For HTTPS transports, the recommended authentication method is `nostr_http_auth`
 
 - a participant authenticates by signing each HTTP request with its Nostr key, producing a NIP-98 authorization header
 - identity is the participant's Nostr pubkey; the descriptor and escrow operator MUST NOT require published bearer secrets for public protocol operations
-- at `create`, the requesting participant supplies the set of participant Nostr pubkeys bound to the escrow instance; the operator binds subsequent `fund_status`, `release`, `refund`, and `cancel` operations to those pubkeys
+- `create` uses an explicitly authorized incremental enrollment flow: the initial authenticated request establishes the escrow instance, and any later participant join MUST use a service-issued invitation or enrollment token plus the joining participant's authenticated request
+- the idempotency key is for request deduplication only and MUST NOT authorize participant joining or bind any additional pubkeys
+- the operator binds subsequent `fund_status`, `release`, `refund`, and `cancel` operations to the pubkeys that have been explicitly enrolled for that escrow instance
 - each participant signs its own operations; threshold release decisions require signatures from the declared threshold of bound participants
 - operators MAY require additional private operator-layer authorization for back-office actions, but such authorization is an operator overlay and MUST NOT be advertised as a public descriptor field
 - authentication identifiers MUST be registered methods; `nostr_http_auth` is the canonical HTTP method, and any extension method MUST be defined by `schema_url` with a mandatory interface schema and versioned identifier
@@ -108,12 +113,14 @@ For HTTPS transports, the recommended authentication method is `nostr_http_auth`
 - idempotency rules, including the shared correlation value used by repeated `create` requests
 - how `funding_model` and `release_decisions` values map to wire payload fields and validation rules
 - transport-specific endpoint resolution rules for every advertised transport
+- schema fetch requirements, including HTTPS-only retrieval, redirect limits, bounded response size, allowed content types, and rejection of private or otherwise disallowed network destinations
 
 ### Operations
 
 The canonical escrow instance operation vocabulary is:
 
-- `create` — open a new escrow instance and bind its participant pubkeys. For shared-instance flows, the first participant call establishes the escrow instance and the second participant call uses the same shared invitation, client token, or idempotency key to bind its participant pubkey to that existing instance. Repeated calls with the same correlation value are idempotent and MUST NOT create a second escrow instance.
+- `create` — open a new escrow instance and bind its participant pubkeys. The initial authenticated request establishes the escrow instance. Any later participant join MUST use a service-issued invitation or enrollment token plus the joining participant's authenticated request. Repeated calls with the same idempotency key are idempotent and MUST NOT create a second escrow instance, but the idempotency key MUST NOT authorize participant joining or bind any additional pubkeys.
+- `funding_instructions` — retrieve the funding instructions needed to fund the escrow instance
 - `fund_status` — observe the funding state of a participant's side
 - `release` — request release of the escrowed amount to the winner or payee
 - `refund` — request refund of the escrowed amount to its funder
@@ -122,11 +129,12 @@ The canonical escrow instance operation vocabulary is:
 Example shared-instance create flow:
 
 ```text
-participant A -> create(invitation=abc123)
-participant B -> create(invitation=abc123)
+participant A -> create()
+service -> invitation=enroll-abc123
+participant B -> create(invitation=enroll-abc123)
 ```
 
-The shared invitation, client token, or idempotency key is the correlation value that binds both participants to the same escrow instance.
+The shared invitation or enrollment token is the authorization value for participant joining. The idempotency key, if present, is only the correlation value used to deduplicate retries.
 
 Operations not in this vocabulary MAY be advertised but are non-canonical and MUST be documented by the operator's referenced schema.
 
@@ -136,7 +144,7 @@ The `funding_model` field declares how many participants fund a single escrow in
 
 - `single_funder` — one participant funds the escrow
 - `two_party` — two participants each fund a side of the same escrow instance
-- `n_of_m` — the referenced schema MUST expose both the activation threshold and the declared participant count using explicit fields, such as `funding_threshold` and `participant_count`, or equivalent named fields at the locations declared by `schema_url`. `M` is the minimum number of required funders, and `N` is the total declared participant count. Clients MUST be able to read both values before the escrow can become active.
+- `n_of_m` — the referenced schema MUST expose two normative fields: `funding_threshold` and `participant_count`. `funding_threshold` is `M`, the minimum number of required funders. `participant_count` is `N`, the total declared participants. Clients MUST use these values consistently when validating funding and MUST NOT treat the escrow as active until both values are known and satisfy the declared funding condition.
 
 ### Release Decisions
 
@@ -193,7 +201,7 @@ A standalone dice game discovers a published escrow descriptor and operates an e
   },
   "release_rules": {
     "release_trigger": "application_signed_result",
-    "refund_trigger": "timeout_or_mutual_consent"
+    "refund_trigger": "timeout_requires_mutual_consent"
   },
   "dispute_rules": {
     "policy": "operator_resolved"
@@ -217,7 +225,7 @@ A standalone dice game discovers a published escrow descriptor and operates an e
     "endpoint": "https://escrow.example.com/pontmore/v1",
     "schema_url": "https://escrow.example.com/pontmore/v1/openapi.json",
     "auth": ["nostr_http_auth"],
-    "operations": ["create", "fund_status", "release", "refund", "cancel"],
+    "operations": ["create", "funding_instructions", "fund_status", "release", "refund", "cancel"],
     "funding_model": "two_party",
     "release_decisions": ["application_signed_result", "mutual_consent", "operator_decision"]
   },
@@ -228,10 +236,13 @@ A standalone dice game discovers a published escrow descriptor and operates an e
 The flow validates the descriptor model:
 
 1. the application discovers the descriptor and reads `service`
-2. both participants call `create` over HTTPS, authenticated with `nostr_http_auth`, binding both participant pubkeys to one escrow instance with `funding_model` `two_party`
-3. each participant funds its side; the application reads `fund_status` until both sides are confirmed
-4. the application commits a verifiable result (the die roll) and submits an `application_signed_result` release decision
-5. the escrow releases both locked amounts to the winner via `release`, or refunds via `refund` if the result is unresolved at timeout
+2. participant A calls `create` over HTTPS, authenticated with `nostr_http_auth`, and establishes the escrow instance
+3. the service issues an invitation or enrollment token for participant B
+4. participant B calls `create` with that invitation or enrollment token; the idempotency key, if used, only deduplicates the request
+5. the application retrieves `funding_instructions` for the established escrow
+6. each participant funds its side; the application reads `fund_status` until both sides are confirmed
+7. the application commits a verifiable result (the die roll) and submits an `application_signed_result` release decision
+8. if the result is unresolved at timeout, the escrow refunds only after a listed explicit decision such as `mutual_consent` or `operator_decision`; the timeout itself does not authorize refund
 
 ## Network Declaration
 
