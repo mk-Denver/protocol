@@ -54,13 +54,13 @@ An escrow descriptor has two intended use levels:
 
 A descriptor that omits the `service` block (see Service Interface) is sufficient for compatibility and discovery and for use inside Pontmore swap flows where the swap state machine in [PIP-02-swap-state-machine.md](./PIP-02-swap-state-machine.md) carries execution. It is NOT sufficient for a standalone application to create, fund, observe, release, or refund an escrow instance on its own.
 
-A descriptor that includes a `service` block is intended to be sufficient for standalone application use. When `service` is present, the descriptor is the primary source of truth for the public escrow service interface.
+A descriptor that includes a `service` block and the required `schema_url` is intended to be sufficient for standalone application use. When `service` is present, the descriptor is the primary source of truth for the public escrow service interface.
 
 The minimum content fields in Minimum Content remain required in both use levels. The `service` block is the additional, optional field that upgrades a descriptor from discovery-only to standalone-sufficient.
 
 ## Service Interface
 
-The `service` content field advertises the public interface that a standalone application uses to instantiate and operate an escrow instance. It is OPTIONAL at the descriptor level. When present, it MUST conform to this section.
+The `service` content field advertises the public interface that a standalone application uses to instantiate and operate an escrow instance. It is OPTIONAL at the descriptor level. When present, it MUST conform to this section. A standalone client MUST reject a descriptor whose `service` block is incomplete, whose transport or authentication choices are unsupported or untrusted, or whose `schema_url` does not normatively define the advertised wire contract.
 
 ### Service Fields
 
@@ -72,7 +72,9 @@ When `service` is present, it MUST include:
 - `interface`
   - interface and version identifier; example: `pontmore_escrow_http_v1`
 - `endpoint`
-  - base service URL for HTTPS transports
+  - canonical endpoint for the first advertised transport
+  - when `https` is advertised, the endpoint MUST be an absolute `https://` URL
+  - each additional advertised transport MUST resolve to exactly one endpoint using that transport's required scheme, as defined by `schema_url`
 - `auth`
   - non-empty array of supported authentication methods; see Authentication
 - `operations`
@@ -81,11 +83,8 @@ When `service` is present, it MUST include:
   - multi-party funding model; see Funding Model
 - `release_decisions`
   - non-empty array of accepted release-decision formats; see Release Decisions
-
-`service` SHOULD include:
-
 - `schema_url`
-  - machine-readable schema URL, for example an OpenAPI document or another protocol-native schema
+  - mandatory machine-readable schema URL for the normative wire contract; see Wire Contract
 
 ### Authentication
 
@@ -96,16 +95,38 @@ For HTTPS transports, the recommended authentication method is `nostr_http_auth`
 - at `create`, the requesting participant supplies the set of participant Nostr pubkeys bound to the escrow instance; the operator binds subsequent `fund_status`, `release`, `refund`, and `cancel` operations to those pubkeys
 - each participant signs its own operations; threshold release decisions require signatures from the declared threshold of bound participants
 - operators MAY require additional private operator-layer authorization for back-office actions, but such authorization is an operator overlay and MUST NOT be advertised as a public descriptor field
+- authentication identifiers MUST be registered methods; `nostr_http_auth` is the canonical HTTP method, and any extension method MUST be defined by `schema_url` with a mandatory interface schema and versioned identifier
+
+### Wire Contract
+
+`schema_url` MUST point to a schema that normatively defines the public service contract, either by embedding the contract itself or by referencing a complete protocol-native or OpenAPI schema. That schema MUST define:
+
+- HTTP methods and paths for `create`, `fund_status`, `release`, `refund`, `cancel`, and funding-instruction retrieval
+- request and response schemas for each listed operation
+- error formats and HTTP status codes
+- escrow state transitions and terminal states
+- idempotency rules, including the shared correlation value used by repeated `create` requests
+- how `funding_model` and `release_decisions` values map to wire payload fields and validation rules
+- transport-specific endpoint resolution rules for every advertised transport
 
 ### Operations
 
 The canonical escrow instance operation vocabulary is:
 
-- `create` — open a new escrow instance and bind its participant pubkeys
+- `create` — open a new escrow instance and bind its participant pubkeys. For shared-instance flows, the first participant call establishes the escrow instance and the second participant call uses the same shared invitation, client token, or idempotency key to bind its participant pubkey to that existing instance. Repeated calls with the same correlation value are idempotent and MUST NOT create a second escrow instance.
 - `fund_status` — observe the funding state of a participant's side
 - `release` — request release of the escrowed amount to the winner or payee
 - `refund` — request refund of the escrowed amount to its funder
 - `cancel` — request cancellation of an unfunded or unresolved escrow instance
+
+Example shared-instance create flow:
+
+```text
+participant A -> create(invitation=abc123)
+participant B -> create(invitation=abc123)
+```
+
+The shared invitation, client token, or idempotency key is the correlation value that binds both participants to the same escrow instance.
 
 Operations not in this vocabulary MAY be advertised but are non-canonical and MUST be documented by the operator's referenced schema.
 
@@ -115,7 +136,7 @@ The `funding_model` field declares how many participants fund a single escrow in
 
 - `single_funder` — one participant funds the escrow
 - `two_party` — two participants each fund a side of the same escrow instance
-- `n_of_m` — M of N declared participants must fund for the escrow to become active
+- `n_of_m` — the referenced schema MUST expose both the activation threshold and the declared participant count using explicit fields, such as `funding_threshold` and `participant_count`, or equivalent named fields at the locations declared by `schema_url`. `M` is the minimum number of required funders, and `N` is the total declared participant count. Clients MUST be able to read both values before the escrow can become active.
 
 ### Release Decisions
 
@@ -126,6 +147,22 @@ The `funding_model` field declares how many participants fund a single escrow in
 - `oracle_signature` — release or refund authorized by a signature from a referenced oracle
 - `application_signed_result` — release or refund authorized by a signed result from the originating application
 - `threshold_participant_signatures` — release or refund authorized by a threshold of participant signatures
+
+Each release-decision format MUST be defined by the referenced schema with a verifiable standalone contract:
+
+- `application_signed_result`
+  - the schema MUST define the signed payload, the signer identity, the signature encoding, the escrow binding, the result binding, and replay protection
+  - the signed payload MUST include a stable escrow identifier and a result identifier or hash so the result cannot be replayed against another escrow instance
+  - the signer identity MUST be a named application identity that the schema or service advertises as valid for this decision type
+  - signatures MUST be serializable in a named encoding such as `base64` or `hex`, and the encoding MUST be declared by the schema
+  - replay protection MUST use a unique nonce, issuance timestamp, sequence number, or equivalent binding that is checked against the escrow instance
+- `oracle_signature`
+  - the schema MUST name the referenced oracle explicitly and MUST bind the decision to that oracle's public key, identifier, or equivalent stable oracle reference
+  - anonymous oracle signatures are not sufficient
+- `threshold_participant_signatures`
+  - the schema MUST define the threshold value and the location of the participant signatures
+  - the participant signature set MUST identify each signer and MUST bind each signature to the same escrow-scoped payload
+  - the threshold MUST be satisfied by distinct bound participants
 
 `release_rules.release_trigger` states the public condition a specific escrow subtype requires before release; `service.release_decisions` states the generic decision formats the service accepts to satisfy such a trigger. Swap-specific triggers such as `counterparty_fiat_payment_confirmed` remain valid for Pontmore swap flows. For standalone non-swap use, `release_decisions` is the generic vocabulary an application relies on.
 
@@ -534,7 +571,7 @@ Every agent profile should declare:
 
 That declared escrow must be usable without out-of-band negotiation at swap time.
 
-For standalone (non-swap) use, an application SHOULD select a descriptor whose `service` block is present and whose advertised `operations`, `funding_model`, and `release_decisions` match the application's needs. A descriptor without `service` MUST NOT be treated as standalone-sufficient.
+For standalone (non-swap) use, an application SHOULD select a descriptor whose `service` block is present and whose advertised `transport`, `endpoint`, `auth`, `interface`, `operations`, `funding_model`, `release_decisions`, and `schema_url` all match the application's supported capabilities and trust constraints. A descriptor without `service` MUST NOT be treated as standalone-sufficient.
 
 ## Open Questions
 
@@ -544,7 +581,4 @@ Additional escrow mechanisms beyond `lightning_hold_invoice`, `custodial_escrow`
 
 Open questions for the service interface:
 
-- whether the service interface should remain in PIP-01 or split into a dedicated escrow service interface PIP as the operation set and transport matrix grow
-- whether transports beyond HTTPS should be canonically defined, or left to descriptor extensions
-- whether Nostr HTTP Auth (NIP-98) should be the single recommended authentication method, or one of several equally valid methods
-- the minimum generic release-decision vocabulary beyond `mutual_consent`, `operator_decision`, `oracle_signature`, `application_signed_result`, and `threshold_participant_signatures`
+- additional escrow mechanisms beyond `lightning_hold_invoice`, `custodial_escrow`, and `cashu_escrow` may still need their own canonical subtype-specific schemas

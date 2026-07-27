@@ -22,7 +22,7 @@ Read `PIP-00` through `PIP-03` first.
 
 - [PIP-01-escrow-descriptor.md](./PIP-01-escrow-descriptor.md)
   - Implementation: `Required`
-  - public escrow declaration and service interface referenced by agents and swaps
+  - public escrow declaration and standalone-capable service interface referenced by agents and swaps; the service interface is optional during swap execution
 
 - [PIP-02-swap-state-machine.md](./PIP-02-swap-state-machine.md)
   - Implementation: `Required`
