@@ -586,6 +586,22 @@ For standalone (non-swap) use, an application SHOULD select a descriptor whose `
 
 ## Open Questions
 
+1. **Placement of service invocation rules**
+   - Should standalone escrow service invocation remain specified directly in `PIP-01`, or should `PIP-01` only reference a dedicated escrow service interface PIP?
+   - If split, which requirements remain normative in `PIP-01` (descriptor discovery/selection) versus the service-interface PIP (wire contract/auth/operation semantics)?
+
+2. **Canonical transport strategy**
+   - Should `https` remain the first canonical transport for `service.transport`, or should the descriptor normatively support multiple first-class transports from the beginning?
+   - If multiple transports are canonical, what endpoint-resolution and parity requirements are mandatory across transports?
+
+3. **HTTP authentication recommendation**
+   - For HTTP transports, should `nostr_http_auth` (NIP-98) remain the recommended baseline authentication method?
+   - What minimum interoperability and security requirements should apply to any alternative HTTP auth method advertised by `schema_url`?
+
+4. **Minimum generic release-decision vocabulary**
+   - Beyond swap-specific release triggers, what is the smallest required generic `service.release_decisions` set for interoperable standalone escrow services?
+   - Is the current baseline (`mutual_consent`, `operator_decision`, `oracle_signature`, `application_signed_result`, `threshold_participant_signatures`) appropriately minimal, or should it be reduced/expanded?
+
 Additional escrow mechanisms beyond `lightning_hold_invoice`, `custodial_escrow`, and `cashu_escrow` may still need their own canonical subtype-specific schemas.
 
 `cashu_escrow` introduces a dependency on a specific Cashu mint. Mint trust, mint selection, and mint failure modes are implementation assumptions rather than Pontmore protocol state. [Nimdolf](https://github.com/cashubtc/nuts/pull/390) is a possible future direction for mint liveness failover, but this proposal does not bind to it.
