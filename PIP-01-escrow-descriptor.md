@@ -187,63 +187,6 @@ The `service` block advertises only the public service interface. The following 
 
 These are operator-layer implementation details. Their absence is what allows the same descriptor to be published openly without exposing operator internals.
 
-### Example: Two-Party Dice Game
-
-A standalone dice game discovers a published escrow descriptor and operates an escrow instance without a Pontmore swap:
-
-```json
-{
-  "version": 1,
-  "escrow_type": "custodial_escrow",
-  "networks": ["lightning"],
-  "funding_rules": {
-    "required_confirmation": "invoice_paid"
-  },
-  "release_rules": {
-    "release_trigger": "application_signed_result",
-    "refund_trigger": "timeout_requires_mutual_consent"
-  },
-  "dispute_rules": {
-    "policy": "operator_resolved"
-  },
-  "reference_format": "bolt11_or_custodial_escrow_reference",
-  "custody_authority": "escrow_operator",
-  "release_authority": "escrow_operator",
-  "refund_authority": "escrow_operator",
-  "implementations": [
-    {
-      "network": "lightning",
-      "invoice_asset": "BTC",
-      "invoice_currency": "sats",
-      "invoice_amount_rule": "exact",
-      "payout_network": "lightning"
-    }
-  ],
-  "service": {
-    "transport": ["https"],
-    "interface": "pontmore_escrow_http_v1",
-    "endpoint": "https://escrow.example.com/pontmore/v1",
-    "schema_url": "https://escrow.example.com/pontmore/v1/openapi.json",
-    "auth": ["nostr_http_auth"],
-    "operations": ["create", "funding_instructions", "fund_status", "release", "refund", "cancel"],
-    "funding_model": "two_party",
-    "release_decisions": ["application_signed_result", "mutual_consent", "operator_decision"]
-  },
-  "updated_at": 1775559028
-}
-```
-
-The flow validates the descriptor model:
-
-1. the application discovers the descriptor and reads `service`
-2. participant A calls `create` over HTTPS, authenticated with `nostr_http_auth`, and establishes the escrow instance
-3. the service issues an invitation or enrollment token for participant B
-4. participant B calls `create` with that invitation or enrollment token; the idempotency key, if used, only deduplicates the request
-5. the application retrieves `funding_instructions` for the established escrow
-6. each participant funds its side; the application reads `fund_status` until both sides are confirmed
-7. the application commits a verifiable result (the die roll) and submits an `application_signed_result` release decision
-8. if the result is unresolved at timeout, the escrow refunds only after a listed explicit decision such as `mutual_consent` or `operator_decision`; the timeout itself does not authorize refund
-
 ## Network Declaration
 
 An escrow descriptor MUST declare every settlement or invoice network supported by the escrow configuration.
