@@ -58,6 +58,10 @@ An operator may resolve disputes by:
 - cancelling and refunding
 - escalating to manual review
 
+### Timeout Fallback
+
+A timeout class (for example `resolution timeout` or an escrow's `refund_trigger` such as `timeout_requires_mutual_consent`) MUST NOT leave the escrow in a permanent deadlock where neither participant will consent and no other resolution path is defined. When a timeout elapses, the operator MUST resolve the swap using one of the resolution modes above; a `mutual_consent`-only path with no fallback is not a valid terminal policy. The escrow descriptor referenced by the swap MUST declare a non-`mutual_consent` fallback resolution consistent with this rule (see the Refund-Trigger Fallback section of [PIP-01-escrow-descriptor.md](./PIP-01-escrow-descriptor.md)).
+
 ## Public-Protocol Boundary
 
 ### Public

@@ -78,7 +78,7 @@ When `service` is present, it MUST include:
 - `auth`
   - non-empty array of supported authentication methods; see Authentication
 - `operations`
-  - MUST include `create`, `funding_instructions`, `fund_status`, `release`, `refund`, and `cancel` for standalone service use
+  - MUST include `create`, `funding_instructions`, `fund_status`, `release`, `refund`, `split`, and `cancel` for standalone service use
 - `funding_model`
   - multi-party funding model; see Funding Model
 - `release_decisions`
@@ -96,8 +96,9 @@ For HTTPS transports, the recommended authentication method is `nostr_http_auth`
 - a participant authenticates by signing each HTTP request with its Nostr key, producing a NIP-98 authorization header
 - identity is the participant's Nostr pubkey; the descriptor and escrow operator MUST NOT require published bearer secrets for public protocol operations
 - `create` uses an explicitly authorized incremental enrollment flow: the initial authenticated request establishes the escrow instance, and any later participant join MUST use a service-issued invitation or enrollment token plus the joining participant's authenticated request
+- an enrollment token MUST bind to the exact joining participant pubkey it is intended for; the token is single-use and single-party, and the service MUST reject a `create` request whose authenticated signer does not match the pubkey the token was issued to. This prevents a token intercepted in transit from being consumed by an unrelated Nostr identity (Sybil join). When the originating participant knows the counterparty pubkey ahead of time, the service SHOULD accept it as a bound parameter in the initial `create` request and mint the enrollment token already scoped to that pubkey; when the counterparty is not known ahead of time, the originating participant MUST still constrain the token to a single redemption and the service MUST NOT accept a bound pubkey that differs from the authenticated signer of the redeeming request
 - the idempotency key is for request deduplication only and MUST NOT authorize participant joining or bind any additional pubkeys
-- the operator binds subsequent `fund_status`, `release`, `refund`, and `cancel` operations to the pubkeys that have been explicitly enrolled for that escrow instance
+- the operator binds subsequent `fund_status`, `release`, `refund`, `split`, and `cancel` operations to the pubkeys that have been explicitly enrolled for that escrow instance
 - each participant signs its own operations; threshold release decisions require signatures from the declared threshold of bound participants
 - operators MAY require additional private operator-layer authorization for back-office actions, but such authorization is an operator overlay and MUST NOT be advertised as a public descriptor field
 - authentication identifiers MUST be registered methods; `nostr_http_auth` is the canonical HTTP method, and any extension method MUST be defined by `schema_url` with a mandatory interface schema and versioned identifier
@@ -106,10 +107,10 @@ For HTTPS transports, the recommended authentication method is `nostr_http_auth`
 
 `schema_url` MUST point to a schema that normatively defines the public service contract, either by embedding the contract itself or by referencing a complete protocol-native or OpenAPI schema. That schema MUST define:
 
-- HTTP methods and paths for `create`, `fund_status`, `release`, `refund`, `cancel`, and funding-instruction retrieval
+- HTTP methods and paths for `create`, `fund_status`, `release`, `refund`, `split`, `cancel`, and funding-instruction retrieval
 - request and response schemas for each listed operation
 - error formats and HTTP status codes
-- escrow state transitions and terminal states
+- escrow state transitions and terminal states, following the Escrow Instance State Machine section below
 - idempotency rules, including the shared correlation value used by repeated `create` requests
 - how `funding_model` and `release_decisions` values map to wire payload fields and validation rules
 - transport-specific endpoint resolution rules for every advertised transport
@@ -124,6 +125,7 @@ The canonical escrow instance operation vocabulary is:
 - `fund_status` — observe the funding state of a participant's side
 - `release` — request release of the escrowed amount to the winner or payee
 - `refund` — request refund of the escrowed amount to its funder
+- `split` — request a partial release of the escrowed amount across two or more declared participants in declared proportions. A `split` request MUST carry a `split_decision` release decision (see Release Decisions) authorized by one of the other registered formats; the operation is not valid without that decision payload
 - `cancel` — request cancellation of an unfunded or unresolved escrow instance
 
 Example shared-instance create flow:
@@ -138,13 +140,52 @@ The shared invitation or enrollment token is the authorization value for partici
 
 Operations not in this vocabulary MAY be advertised but are non-canonical and MUST be documented by the operator's referenced schema.
 
+### Escrow Instance State Machine
+
+A standalone escrow instance is a small state machine. The operator's `schema_url` MUST normatively define the states, the allowed transitions, and which operations are valid in each state. This removes cross-operator ambiguity about whether, for example, `fund_status` may be called after `cancel`, or whether `cancel` is permitted while a `release` is pending operator approval.
+
+The canonical states are:
+
+- `created` — the escrow instance exists with its bound participant pubkeys; no side is funded yet
+- `partially_funded` — at least one declared participant has funded, but the funding condition is not yet satisfied
+- `active` — the funding condition is satisfied (for example the threshold or both sides are funded); release, refund, and split are now reachable
+- `release_pending` — a `release` or `split` request has been submitted and is awaiting the operator's decision or an authorizing signature
+- `released` — terminal; the escrowed amount has been released (in whole or, after a `split`, in declared proportions)
+- `refunded` — terminal; the escrowed amount has been refunded to its funder(s)
+- `canceled` — terminal; the escrow instance was canceled before becoming active, and any partially funded amounts were refunded
+
+Canonical transition rules:
+
+- `create` transitions an instance from nonexistent to `created`
+- funding confirmation transitions `created` to `partially_funded`, and `partially_funded` to `active` once the funding condition is satisfied
+- `cancel` is valid in `created`, `partially_funded`, and `release_pending` only when the relevant authority and the refund/funding-phase rules permit it; `cancel` in `partially_funded` MUST refund any already-funded participant side (see Funding Model)
+- `release`, `refund`, and `split` are valid only in `active` or `release_pending`
+- `fund_status` and `funding_instructions` are valid in every non-terminal state
+- once an instance is in a terminal state (`released`, `refunded`, `canceled`), the operator MUST reject every mutating operation with a terminal-state error; read operations (`fund_status`) remain valid
+- at most one terminal transition may succeed; the operator MUST reject a `release`, `refund`, or `split` that races a competing terminal transition and MUST surface the already-terminal state
+
+The operator MAY add non-canonical intermediate states (for example an explicit `disputed` state) but MUST document them in `schema_url` and MUST NOT relax the terminal-state invariants above.
+
 ### Funding Model
 
 The `funding_model` field declares how many participants fund a single escrow instance:
 
 - `single_funder` — one participant funds the escrow
 - `two_party` — two participants each fund a side of the same escrow instance
-- `n_of_m` — the referenced schema MUST expose two normative fields: `funding_threshold` and `participant_count`. `funding_threshold` is `M`, the minimum number of required funders. `participant_count` is `N`, the total declared participants. Clients MUST use these values consistently when validating funding and MUST NOT treat the escrow as active until both values are known and satisfy the declared funding condition.
+- `m_of_n` — the referenced schema MUST expose two normative fields: `funding_threshold` and `participant_count`. `funding_threshold` is `M`, the minimum number of required funders. `participant_count` is `N`, the total declared participants. Clients MUST use these values consistently when validating funding and MUST NOT treat the escrow as active until both values are known and satisfy the declared funding condition.
+
+### Funding-Phase Timeout and Partial Refund
+
+A funding model with more than one declared funder (`two_party` or `m_of_n`) creates a partial-funding risk: one participant funds a side and another abandons the process, locking the first participant's capital indefinitely. To prevent griefing, the descriptor and the referenced schema MUST bound the funding phase.
+
+- `funding_rules` SHOULD declare a `funding_timeout` (or reference a named timeout class) that bounds how long an instance may remain in `created` or `partially_funded` before it becomes cancelable
+- when the `funding_timeout` elapses without the funding condition being satisfied, any bound participant or the operator MAY call `cancel` on the instance
+- a `cancel` issued while the instance is `partially_funded` MUST refund every already-funded participant side back to its funder before transitioning the instance to `canceled`; partial funding MUST NOT be retained by the operator as a default
+- the operator MUST NOT treat the absence of all-but-one funder as implicit consent to release; an under-funded instance can only move to `active` via the declared funding condition, or to `canceled` via `cancel`
+
+### Streaming and Tranche Funding
+
+The funding rules in this version assume all-or-nothing locks. Milestone or tranche-based funding (releasing the escrowed amount in installments against partial results) is not defined by this version of PIP-01. See Open Questions.
 
 ### Release Decisions
 
@@ -155,6 +196,7 @@ The `funding_model` field declares how many participants fund a single escrow in
 - `oracle_signature` — release or refund authorized by a signature from a referenced oracle
 - `application_signed_result` — release or refund authorized by a signed result from the originating application
 - `threshold_participant_signatures` — release or refund authorized by a threshold of participant signatures
+- `split_decision` — partial release authorized by splitting the escrowed amount across two or more declared participants in declared proportions; a `split_decision` is itself authorized by one of the other registered formats above and carried as a payload of that format
 
 Each release-decision format MUST be defined by the referenced schema with a verifiable standalone contract:
 
@@ -167,12 +209,27 @@ Each release-decision format MUST be defined by the referenced schema with a ver
 - `oracle_signature`
   - the schema MUST name the referenced oracle explicitly and MUST bind the decision to that oracle's public key, identifier, or equivalent stable oracle reference
   - anonymous oracle signatures are not sufficient
+  - the signed payload MUST commit to the stable escrow identifier of the escrow instance it authorizes; an oracle signature is not valid for any escrow instance other than the one named in its signed payload. This prevents a signature minted for one escrow from being replayed to release a second, otherwise-identical escrow (for example two wagers on the same oracle event)
 - `threshold_participant_signatures`
   - the schema MUST define the threshold value and the location of the participant signatures
   - the participant signature set MUST identify each signer and MUST bind each signature to the same escrow-scoped payload
+  - the escrow-scoped payload MUST include the stable escrow identifier, so the participant signature set cannot be replayed against another escrow instance
   - the threshold MUST be satisfied by distinct bound participants
+- `split_decision`
+  - the schema MUST define a partial-outcome payload that allocates the escrowed amount across two or more declared participants in declared proportions
+  - the schema MUST bind the split payload to the stable escrow identifier and to a result identifier or hash so the decision cannot be replayed against another escrow instance
+  - the schema MUST define which release-decision formats authorize a `split_decision` (for example `mutual_consent`, `operator_decision`, `oracle_signature`, or `application_signed_result`); a `split_decision` is a release decision, not an operation, and MUST be carried by one of the other registered formats
+  - the sum of declared proportions MUST equal the whole escrowed amount; the schema MUST reject a split payload whose proportions do not sum to the funded amount
 
 `release_rules.release_trigger` states the public condition a specific escrow subtype requires before release; `service.release_decisions` states the generic decision formats the service accepts to satisfy such a trigger. Swap-specific triggers such as `counterparty_fiat_payment_confirmed` remain valid for Pontmore swap flows. For standalone non-swap use, `release_decisions` is the generic vocabulary an application relies on.
+
+### Refund-Trigger Fallback
+
+A `refund_trigger` that resolves only to `mutual_consent` (for example `timeout_requires_mutual_consent`) creates a deadlock when the participants are actively disputing and refuse consent: the escrow times out but neither party will sign the refund, so the funds are stuck unless the operator voluntarily intervenes. To avoid indefinite limbo:
+
+- a `refund_trigger` whose only resolution path is `mutual_consent` MUST declare a fallback resolution that does not require both participants' consent, and that fallback MUST be one of the operator's advertised `release_decisions` (for example `operator_decision`, `oracle_signature`, or `threshold_participant_signatures`)
+- the descriptor's `dispute_rules.policy` SHOULD be consistent with that fallback; if `dispute_rules.policy` is `operator_resolved`, the fallback SHOULD be `operator_decision`
+- a descriptor MUST NOT advertise a `refund_trigger` whose only reachable resolution is `mutual_consent` with no declared fallback; clients SHOULD treat such a descriptor as unsuitable for standalone use
 
 ### Public/Private Boundary
 
@@ -527,6 +584,30 @@ That declared escrow must be usable without out-of-band negotiation at swap time
 
 For standalone (non-swap) use, an application SHOULD select a descriptor whose `service` block is present and whose advertised `transport`, `endpoint`, `auth`, `interface`, `operations`, `funding_model`, `release_decisions`, and `schema_url` all match the application's supported capabilities and trust constraints. A descriptor without `service` MUST NOT be treated as standalone-sufficient.
 
+## Implementation Risks and Standalone Suitability
+
+Each canonical escrow subtype carries infrastructure and execution risks that a standalone application must weigh before selecting a descriptor. The protocol surfaces these risks as descriptor facts where possible; where they cannot be made into protocol state, they are documented here as implementation assumptions.
+
+### `lightning_hold_invoice`
+
+- **Routing-node liquidity penalty.** A Lightning hold invoice locks liquidity across the entire routing path for as long as the invoice is held. If a dispute takes hours or days to resolve, intermediate routing nodes will typically force-close channels to reclaim their liquidity.
+- **Standalone suitability.** This subtype is suited to rapid, near-instant conditional payments and is poorly suited to long-running standalone escrows (for example freelance contracts or milestone-based agreements). A descriptor SHOULD document its expected dispute-resolution window, and applications SHOULD avoid `lightning_hold_invoice` for escrows whose resolution is not expected within the invoice's hold lifetime.
+
+### `custodial_escrow`
+
+- **Full counterparty risk.** The `escrow_operator` is declared as `custody_authority`, `release_authority`, and `refund_authority`. In a standalone context this is, from a custody standpoint, indistinguishable from a centralized service: the protocol standardizes the API to the operator but provides no cryptographic guarantee that the operator will not misappropriate custodied funds.
+- **Standalone suitability.** Selection of a `custodial_escrow` is a trust decision. Applications SHOULD prefer descriptors that reduce operator sole-authority (for example by advertising `threshold_participant_signatures` or `oracle_signature` release decisions, or by referencing an external arbiter via `dispute_rules.policy`) over descriptors that rely solely on `operator_decision`. Operator accountability references (proof of reserve, attestations, collateral) are an open question; see Open Questions.
+
+### `cashu_escrow`
+
+- **Mint liveness and reserve dependency.** Cashu escrow depends on the declared `mint_url` remaining online and backing its reserves for the duration of the P2PK lock. If the mint goes offline or fails its reserves before the locktime expires, the locked tokens can become unredeemable regardless of the operator's release/refund authority; the user's refund pubkey is only useful if the mint honors redemptions.
+- **Standalone suitability.** Mint trust, mint selection, and mint failure modes are implementation assumptions rather than Pontmore protocol state (see Open Questions). Applications SHOULD treat the mint as an additional trusted party and SHOULD NOT select a `cashu_escrow` whose `mint_url` they do not independently trust.
+
+### Application-signed-result dependency
+
+- **Application-as-oracle risk.** When `release_rules.release_trigger` is satisfied by `application_signed_result`, the escrow's release depends entirely on the originating application's key security. If the application's signing backend is compromised, an attacker can mint a valid signed result and release the escrow.
+- **Standalone suitability.** Applications SHOULD scope the application signing key to escrow release only, SHOULD require replay protection (escrow identifier and result binding) per Release Decisions, and SHOULD consider pairing `application_signed_result` with a `threshold_participant_signatures` or `oracle_signature` release decision for higher-value escrows.
+
 ## Open Questions
 
 1. **Placement of service invocation rules**
@@ -543,7 +624,18 @@ For standalone (non-swap) use, an application SHOULD select a descriptor whose `
 
 4. **Minimum generic release-decision vocabulary**
    - Beyond swap-specific release triggers, what is the smallest required generic `service.release_decisions` set for interoperable standalone escrow services?
-   - Is the current baseline (`mutual_consent`, `operator_decision`, `oracle_signature`, `application_signed_result`, `threshold_participant_signatures`) appropriately minimal, or should it be reduced/expanded?
+   - Is the current baseline (`mutual_consent`, `operator_decision`, `oracle_signature`, `application_signed_result`, `threshold_participant_signatures`, `split_decision`) appropriately minimal, or should it be reduced/expanded?
+   - `split_decision` has been added so that arbiter-resolved standalone escrows can produce partial outcomes (for example 50/50 splits) rather than only whole-release or whole-refund. Should `split_decision` be required for any descriptor advertising `operator_decision`, since an arbiter that can resolve a dispute may need to split?
+
+5. **Nostr as a first-class transport**
+   - This version of PIP-01 fixes `service.transport` to `https` only. Since participants already authenticate with Nostr keys (NIP-98), should `nostr` (relay-based remote RPC, e.g. NIP-46-style) be added as a first-class canonical transport alongside `https`?
+   - If added, what operation/event mapping and endpoint-resolution rules keep `https` and `nostr` transports at parity?
+
+6. **Streaming and tranche-based funding**
+   - The funding rules in this version assume all-or-nothing locks. Should a future PIP define milestone- or tranche-based funding (releasing installments against partial results) for standalone escrows such as freelance contracts? If so, does this belong in PIP-01's `funding_model`, or in a separate escrow-lifecycle PIP?
+
+7. **Operator accountability references**
+   - Should `custodial_escrow` descriptors be REQUIRED (rather than merely able) to advertise a public accountability reference (proof of reserve, attestation, or collateral) as a descriptor field, given full counterparty risk? If so, what public reference format stays inside the PIP-01 public/private boundary?
 
 Additional escrow mechanisms beyond `lightning_hold_invoice`, `custodial_escrow`, and `cashu_escrow` may still need their own canonical subtype-specific schemas.
 
