@@ -78,7 +78,7 @@ When `service` is present, it MUST include:
 - `auth`
   - non-empty array of supported authentication methods; see Authentication
 - `operations`
-  - MUST include `create`, `funding_instructions`, `fund_status`, `release`, `refund`, `split`, and `cancel` for standalone service use
+  - MUST include `create`, `funding_instructions`, `fund_status`, `release`, `refund`, and `cancel` for standalone service use; `split` MUST be included only when the descriptor also advertises `split_decision` in `release_decisions`
 - `funding_model`
   - multi-party funding model; see Funding Model
 - `release_decisions`
@@ -112,6 +112,7 @@ For HTTPS transports, the recommended authentication method is `nostr_http_auth`
 - error formats and HTTP status codes
 - escrow state transitions and terminal states, following the Escrow Instance State Machine section below
 - idempotency rules, including the shared correlation value used by repeated `create` requests
+- timeout-class bindings, including each declared timeout class and its non-`mutual_consent` fallback resolution
 - how `funding_model` and `release_decisions` values map to wire payload fields and validation rules
 - transport-specific endpoint resolution rules for every advertised transport
 - schema fetch requirements, including HTTPS-only retrieval, redirect limits, bounded response size, allowed content types, and rejection of private or otherwise disallowed network destinations
@@ -125,7 +126,7 @@ The canonical escrow instance operation vocabulary is:
 - `fund_status` — observe the funding state of a participant's side
 - `release` — request release of the escrowed amount to the winner or payee
 - `refund` — request refund of the escrowed amount to its funder
-- `split` — request a partial release of the escrowed amount across two or more declared participants in declared proportions. A `split` request MUST carry a `split_decision` release decision (see Release Decisions) authorized by one of the other registered formats; the operation is not valid without that decision payload
+- `split` — request a partial release of the escrowed amount across two or more declared participants in declared proportions. When `split` is advertised, a `split` request MUST carry a `split_decision` release decision (see Release Decisions) authorized by one of the other registered formats; the operation is not valid without that decision payload
 - `cancel` — request cancellation of an unfunded or unresolved escrow instance
 
 Example shared-instance create flow:
@@ -198,6 +199,8 @@ The funding rules in this version assume all-or-nothing locks. Milestone or tran
 - `threshold_participant_signatures` — release or refund authorized by a threshold of participant signatures
 - `split_decision` — partial release authorized by splitting the escrowed amount across two or more declared participants in declared proportions; a `split_decision` is itself authorized by one of the other registered formats above and carried as a payload of that format
 
+A descriptor that advertises `split` in `operations` MUST also advertise `split_decision` in `release_decisions`; otherwise it MUST NOT advertise `split`.
+
 Each release-decision format MUST be defined by the referenced schema with a verifiable standalone contract:
 
 - `application_signed_result`
@@ -219,7 +222,7 @@ Each release-decision format MUST be defined by the referenced schema with a ver
   - the schema MUST define a partial-outcome payload that allocates the escrowed amount across two or more declared participants in declared proportions
   - the schema MUST bind the split payload to the stable escrow identifier and to a result identifier or hash so the decision cannot be replayed against another escrow instance
   - the schema MUST define which release-decision formats authorize a `split_decision` (for example `mutual_consent`, `operator_decision`, `oracle_signature`, or `application_signed_result`); a `split_decision` is a release decision, not an operation, and MUST be carried by one of the other registered formats
-  - the sum of declared proportions MUST equal the whole escrowed amount; the schema MUST reject a split payload whose proportions do not sum to the funded amount
+  - the sum of declared proportions MUST equal the whole escrowed amount minus fees if applicable; the schema MUST reject a split payload whose proportions do not sum to the funded amount
 
 `release_rules.release_trigger` states the public condition a specific escrow subtype requires before release; `service.release_decisions` states the generic decision formats the service accepts to satisfy such a trigger. Swap-specific triggers such as `counterparty_fiat_payment_confirmed` remain valid for Pontmore swap flows. For standalone non-swap use, `release_decisions` is the generic vocabulary an application relies on.
 
@@ -227,9 +230,10 @@ Each release-decision format MUST be defined by the referenced schema with a ver
 
 A `refund_trigger` that resolves only to `mutual_consent` (for example `timeout_requires_mutual_consent`) creates a deadlock when the participants are actively disputing and refuse consent: the escrow times out but neither party will sign the refund, so the funds are stuck unless the operator voluntarily intervenes. To avoid indefinite limbo:
 
+- for every timeout class advertised by the schema, including `payment proof timeout`, `payout timeout`, `resolution timeout`, and any `refund-trigger timeout` class, the schema MUST declare exactly one applicable non-`mutual_consent` fallback resolution, and standalone compatibility validation MUST use that explicit binding rather than inferring a fallback from the trigger name alone
 - a `refund_trigger` whose only resolution path is `mutual_consent` MUST declare a fallback resolution that does not require both participants' consent, and that fallback MUST be one of the operator's advertised `release_decisions` (for example `operator_decision`, `oracle_signature`, or `threshold_participant_signatures`)
 - the descriptor's `dispute_rules.policy` SHOULD be consistent with that fallback; if `dispute_rules.policy` is `operator_resolved`, the fallback SHOULD be `operator_decision`
-- a descriptor MUST NOT advertise a `refund_trigger` whose only reachable resolution is `mutual_consent` with no declared fallback; clients SHOULD treat such a descriptor as unsuitable for standalone use
+- a descriptor MUST NOT advertise a timeout class whose only reachable resolution is `mutual_consent` with no declared fallback; clients SHOULD treat such a descriptor as unsuitable for standalone use
 
 ### Public/Private Boundary
 
@@ -628,8 +632,8 @@ Each canonical escrow subtype carries infrastructure and execution risks that a 
    - `split_decision` has been added so that arbiter-resolved standalone escrows can produce partial outcomes (for example 50/50 splits) rather than only whole-release or whole-refund. Should `split_decision` be required for any descriptor advertising `operator_decision`, since an arbiter that can resolve a dispute may need to split?
 
 5. **Nostr as a first-class transport**
-   - This version of PIP-01 fixes `service.transport` to `https` only. Since participants already authenticate with Nostr keys (NIP-98), should `nostr` (relay-based remote RPC, e.g. NIP-46-style) be added as a first-class canonical transport alongside `https`?
-   - If added, what operation/event mapping and endpoint-resolution rules keep `https` and `nostr` transports at parity?
+  - This version of PIP-01 requires `https` as the canonical first transport for `service.transport`, while still allowing additional advertised transports. Since participants already authenticate with Nostr keys (NIP-98), should `nostr` (relay-based remote RPC, e.g. NIP-46-style) be added as a first-class canonical transport alongside `https`?
+  - If added, what operation/event mapping and endpoint-resolution rules keep `https` and `nostr` transports at parity?
 
 6. **Streaming and tranche-based funding**
    - The funding rules in this version assume all-or-nothing locks. Should a future PIP define milestone- or tranche-based funding (releasing installments against partial results) for standalone escrows such as freelance contracts? If so, does this belong in PIP-01's `funding_model`, or in a separate escrow-lifecycle PIP?
