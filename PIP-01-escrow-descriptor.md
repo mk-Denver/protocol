@@ -204,8 +204,6 @@ Examples include:
 - `cashu_v4_token`
 - opaque service-defined references
 
-If network-specific implementation entries override the top-level `reference_format`, clients MUST use the implementation-specific value only for that implementation.
-
 ## Descriptor Example
 
 ```json
@@ -251,37 +249,15 @@ The matching event tags SHOULD include:
 
 `lightning_hold_invoice` is a canonical escrow subtype for swaps that use a Lightning hold invoice as the escrow lock.
 
-When `escrow_type` is `lightning_hold_invoice`, the descriptor SHOULD include descriptor-level compatibility facts for:
+When `escrow_type` is `lightning_hold_invoice`, `networks` MUST include `lightning`. The descriptor MUST expose enough public compatibility data for clients to know that the escrow reference is a Lightning hold-invoice reference and to evaluate the advertised funding, release, dispute, and timeout rules.
 
-- invoice network
-- invoice asset or currency convention
-- invoice amount rule
-- hold expiry rule
-- settlement authority
-- cancellation authority
-- release trigger
-- refund trigger
-- preimage visibility boundary
-- payout network
-
-Raw invoice payloads, settlement secrets, preimages, and private payout instructions SHOULD stay out of the public descriptor.
+Raw invoice payloads, settlement secrets, preimages, and private payout instructions MUST stay out of the public descriptor. Subtype-specific service mechanics belong to the referenced service schema.
 
 ## Canonical Subtype: `custodial_escrow`
 
 `custodial_escrow` is a canonical escrow subtype for swaps where an escrow operator takes custody of the settlement asset or invoice claim and releases or refunds it according to public protocol state or the referenced service schema.
 
-This subtype is network-generic. The top-level `networks` array remains the canonical supported-network declaration for the descriptor. Network-specific implementation details MUST be represented under `implementations` and MUST NOT expand the supported network set beyond `content.networks`.
-
-When `escrow_type` is `custodial_escrow`, the descriptor SHOULD include descriptor-level compatibility facts for:
-
-- custody authority
-- release authority
-- refund authority
-- release trigger
-- refund trigger
-- network-specific implementation profiles
-
-Each implementation entry MUST identify one `network` value that is present in top-level `networks`. Clients MUST ignore implementation entries whose `network` value is not present in top-level `networks`. If no valid implementation entries remain, clients MUST treat the descriptor as unusable.
+This subtype is network-generic. The top-level `networks` array is the canonical supported-network declaration for the descriptor. Subtype-specific service mechanics belong to the referenced service schema.
 
 Raw invoices, private payment instructions, operator account details, custody internals, and private reconciliation records SHOULD stay out of the public descriptor.
 
@@ -289,20 +265,7 @@ Raw invoices, private payment instructions, operator account details, custody in
 
 `cashu_escrow` is a canonical escrow subtype where funds are held as Cashu ecash tokens locked to the escrow operator's pubkey using NUT-11 spending conditions, with a refund pubkey and locktime.
 
-When `escrow_type` is `cashu_escrow`, the descriptor SHOULD include descriptor-level compatibility facts for:
-
-- custody authority
-- release authority
-- refund authority
-- release trigger
-- refund trigger
-- Cashu network implementation profile
-- mint URL
-- lock mechanism
-- token reference format
-- payout network
-
-Each implementation entry describing the Cashu escrow lock MUST identify a `network` value of `cashu`, and `cashu` MUST appear in top-level `networks`.
+When `escrow_type` is `cashu_escrow`, `networks` MUST include `cashu`. The descriptor MUST expose enough public compatibility data for clients to know that the escrow reference is a Cashu escrow reference and to evaluate the advertised funding, release, dispute, and timeout rules. Subtype-specific service mechanics belong to the referenced service schema.
 
 Raw Cashu token strings, mint credentials, preimages, and private payout instructions SHOULD stay out of the public descriptor. Only opaque references or hashes SHOULD appear in public evidence events unless targeted disclosure is required by the applicable dispute policy.
 
