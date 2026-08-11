@@ -156,9 +156,20 @@ The `networks` content array is the canonical declaration. The repeated tags are
 
 `funding_rules` declares descriptor-level compatibility facts about how an escrow expects funding to be satisfied.
 
-PIP-01 does not define a canonical standalone funding state machine. Detailed thresholds, participant counts, validation rules, funding-instruction formats, partial-funding behavior, and operation sequencing belong to the referenced service schema when direct invocation is advertised.
+Escrow funding is described as an `m of n` requirement.
 
-If a descriptor advertises multi-party funding, its `funding_rules` or referenced service schema MUST define how partially funded escrows can be canceled or refunded after timeout. A descriptor MUST NOT imply that partially funded capital can remain locked indefinitely with no timeout or fallback path.
+- `funding_rules.funding_threshold` is `m`: the minimum number of declared funding participants whose funding must be confirmed before the escrow is considered funded
+- `funding_rules.participant_count` is `n`: the total number of declared funding participants for the escrow
+
+`funding_threshold` MUST be an integer greater than or equal to `1`.
+
+`participant_count` MUST be an integer greater than or equal to `funding_threshold`.
+
+A `1 of 1` funding rule represents a single-funder escrow. A `2 of 2` funding rule represents a two-party escrow where both declared funders must fund. A `1 of 2` funding rule represents one participant funding on behalf of a two-party escrow. Other values represent threshold funding.
+
+The descriptor declares only the funding cardinality required for compatibility. PIP-01 does not define a canonical standalone funding state machine. The referenced service schema MUST define how participants are identified, how funding instructions are retrieved, how partial funding is represented, and how timeout cancellation or refund works.
+
+If `participant_count` is greater than `1`, the descriptor or referenced service schema MUST define how partially funded escrows can be canceled or refunded after timeout. A descriptor MUST NOT imply that partially funded capital can remain locked indefinitely with no timeout or fallback path.
 
 ## Release Rules
 
@@ -203,8 +214,9 @@ If network-specific implementation entries override the top-level `reference_for
   "escrow_type": "custodial_escrow",
   "networks": ["bitcoin", "lightning"],
   "funding_rules": {
-    "required_confirmation": "escrow_funded",
-    "funding_model": "single_funder",
+    "funding_threshold": 1,
+    "participant_count": 1,
+    "required_confirmation": "invoice_paid",
     "funding_timeout": "funding timeout"
   },
   "release_rules": {
@@ -315,8 +327,8 @@ A descriptor without `service.schema` MUST NOT be treated as directly callable s
 2. **Descriptor-level release-mode hints**
    - Is the small compatibility vocabulary of `mutual_consent`, `operator_decision`, and `external_attestation` sufficient, or should PIP-01 avoid descriptor-level release-mode hints entirely?
 
-3. **Multi-party funding metadata**
-   - What is the smallest descriptor-level metadata needed for clients to reject unsafe multi-party funding before fetching the service schema?
+3. **Funding cardinality metadata**
+   - What additional descriptor-level metadata, if any, is needed for clients to reject unsafe multi-party funding before fetching the service schema?
 
 4. **Custodial accountability references**
    - Should `custodial_escrow` descriptors advertise a public accountability reference, such as proof of reserve, attestation, or collateral, without leaking operator-private implementation details?
