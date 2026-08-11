@@ -30,7 +30,7 @@ The escrow descriptor tells counterparties and operators:
 
 - what escrow mechanism is used
 - which settlement or invoice networks are supported
-- what public funding and release rules are advertised
+- what public funding and dispute rules are advertised
 - how the escrow instance is referenced
 - what timeout and dispute assumptions apply
 - where to find the service schema, if one is advertised
@@ -47,7 +47,6 @@ Minimum expected fields:
 - `escrow_type`
 - `networks`
 - `funding_rules`
-- `release_rules`
 - `dispute_rules`
 - `reference_format`
 - `updated_at`
@@ -56,7 +55,7 @@ Minimum expected fields:
 
 An escrow descriptor has two intended use levels:
 
-- **compatibility and discovery** - the descriptor declares which networks, assets, reference formats, funding rules, release rules, and dispute policy an escrow supports, so that agents and swaps can select it
+- **compatibility and discovery** - the descriptor declares which networks, assets, reference formats, funding rules, and dispute policy an escrow supports, so that agents and swaps can select it
 - **service schema discovery** - the descriptor additionally points to a machine-readable schema
 
 A descriptor that omits the `service` block is sufficient for compatibility and discovery and for use inside Pontmore swap flows where the swap state machine in [PIP-02-swap-state-machine.md](./PIP-02-swap-state-machine.md) carries public execution state.
@@ -171,23 +170,11 @@ The descriptor declares only the funding cardinality required for compatibility.
 
 If `participant_count` is greater than `1`, the descriptor or referenced service schema MUST define how partially funded escrows can be canceled or refunded after timeout. A descriptor MUST NOT imply that partially funded capital can remain locked indefinitely with no timeout or fallback path.
 
-## Release Rules
-
-`release_rules` declares descriptor-level compatibility facts about the public condition required before release or refund is valid.
-
-Release modes MAY be advertised as compatibility hints. When present, they SHOULD use a small vocabulary such as:
-
-- `mutual_consent`
-- `operator_decision`
-- `external_attestation`
-
-Exact payloads, signer identities, signature encodings, thresholds, replay protection, result binding, and operation-specific authorization rules belong to the referenced service schema.
-
-PIP-01 does not define `split` as a canonical operation. If a service supports partial outcomes, its OpenAPI or AsyncAPI schema can expose and define that operation. PIP-03 may still describe dispute resolution as splitting an outcome where escrow policy allows it.
-
 ## Dispute Rules and Timeout Fallback
 
 `dispute_rules` declares descriptor-level compatibility facts about the applicable dispute policy.
+
+PIP-01 does not define release, refund, cancellation, or partial-outcome semantics. For Pontmore swaps, public release and dispute lifecycle behavior is defined by [PIP-02-swap-state-machine.md](./PIP-02-swap-state-machine.md) and [PIP-03-dispute-policy.md](./PIP-03-dispute-policy.md). For service use, release and refund behavior belongs to the referenced service schema.
 
 Timeout and refund fallback metadata advertised by an escrow descriptor MUST be compatible with [PIP-03-dispute-policy.md](./PIP-03-dispute-policy.md). PIP-03 is the source of truth for timeout classes and fallback resolution policy.
 
@@ -217,11 +204,6 @@ Examples include:
     "required_confirmation": "invoice_paid",
     "funding_timeout": "funding timeout"
   },
-  "release_rules": {
-    "release_trigger": "counterparty_fiat_payment_confirmed",
-    "refund_trigger": "timeout_or_dispute_refund_decision",
-    "release_modes": ["mutual_consent", "operator_decision"]
-  },
   "dispute_rules": {
     "policy": "operator_resolved",
     "timeout_fallback": "operator_decision"
@@ -249,7 +231,7 @@ The matching event tags SHOULD include:
 
 `lightning_hold_invoice` is a canonical escrow subtype for swaps that use a Lightning hold invoice as the escrow lock.
 
-When `escrow_type` is `lightning_hold_invoice`, `networks` MUST include `lightning`. The descriptor MUST expose enough public compatibility data for clients to know that the escrow reference is a Lightning hold-invoice reference and to evaluate the advertised funding, release, dispute, and timeout rules.
+When `escrow_type` is `lightning_hold_invoice`, `networks` MUST include `lightning`. The descriptor MUST expose enough public compatibility data for clients to know that the escrow reference is a Lightning hold-invoice reference and to evaluate the advertised funding, dispute, timeout, and service-schema compatibility.
 
 Raw invoice payloads, settlement secrets, preimages, and private payout instructions MUST stay out of the public descriptor. Subtype-specific service mechanics belong to the referenced service schema.
 
@@ -265,7 +247,7 @@ Raw invoices, private payment instructions, operator account details, custody in
 
 `cashu_escrow` is a canonical escrow subtype where funds are held as Cashu ecash tokens locked to the escrow operator's pubkey using NUT-11 spending conditions, with a refund pubkey and locktime.
 
-When `escrow_type` is `cashu_escrow`, `networks` MUST include `cashu`. The descriptor MUST expose enough public compatibility data for clients to know that the escrow reference is a Cashu escrow reference and to evaluate the advertised funding, release, dispute, and timeout rules. Subtype-specific service mechanics belong to the referenced service schema.
+When `escrow_type` is `cashu_escrow`, `networks` MUST include `cashu`. The descriptor MUST expose enough public compatibility data for clients to know that the escrow reference is a Cashu escrow reference and to evaluate the advertised funding, dispute, timeout, and service-schema compatibility. Subtype-specific service mechanics belong to the referenced service schema.
 
 Raw Cashu token strings, mint credentials, preimages, and private payout instructions SHOULD stay out of the public descriptor. Only opaque references or hashes SHOULD appear in public evidence events unless targeted disclosure is required by the applicable dispute policy.
 
@@ -287,11 +269,8 @@ A descriptor without `service.schema` provides no PIP-01 service schema pointer.
 1. **Additional schema types**
    - Should future revisions add `smithy`, `protobuf`, or another schema type once a concrete implementation needs it?
 
-2. **Descriptor-level release-mode hints**
-   - Is the small compatibility vocabulary of `mutual_consent`, `operator_decision`, and `external_attestation` sufficient, or should PIP-01 avoid descriptor-level release-mode hints entirely?
-
-3. **Funding cardinality metadata**
+2. **Funding cardinality metadata**
    - What additional descriptor-level metadata, if any, is needed for clients to reject unsafe multi-party funding before fetching the service schema?
 
-4. **Custodial accountability references**
+3. **Custodial accountability references**
    - Should `custodial_escrow` descriptors advertise a public accountability reference, such as proof of reserve, attestation, or collateral, without leaking operator-private implementation details?
