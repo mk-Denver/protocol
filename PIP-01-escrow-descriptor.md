@@ -14,9 +14,9 @@
 
 This document defines the public escrow descriptor event referenced by agent definitions and swaps.
 
-An escrow descriptor is a compatibility object. It declares the public facts needed to discover an escrow configuration, decide whether a client can use it, reference it from Pontmore swap flows, and locate the service schema that defines the callable escrow interface.
+An escrow descriptor is a compatibility object. It declares the public facts needed to discover an escrow configuration, decide whether a client can use it, reference it from Pontmore swap flows, and locate the service schema.
 
-PIP-01 does not define an escrow service's internal state machine, endpoint contract, authentication protocol, request payloads, response payloads, error format, or operation-specific authorization rules. When a descriptor advertises a callable service, those details belong to the referenced service schema.
+PIP-01 does not define escrow service behavior. Internal state machines, endpoint contracts, authentication protocols, request payloads, response payloads, error formats, and operation-specific authorization rules belong to the referenced service schema.
 
 ## Event Type
 
@@ -33,7 +33,7 @@ The escrow descriptor tells counterparties and operators:
 - what public funding and release rules are advertised
 - how the escrow instance is referenced
 - what timeout and dispute assumptions apply
-- where to find the service schema, if the escrow can be invoked directly
+- where to find the service schema, if one is advertised
 
 The public swap lifecycle remains defined by [PIP-02-swap-state-machine.md](./PIP-02-swap-state-machine.md). Dispute and timeout fallback policy remains defined by [PIP-03-dispute-policy.md](./PIP-03-dispute-policy.md).
 
@@ -57,17 +57,17 @@ Minimum expected fields:
 An escrow descriptor has two intended use levels:
 
 - **compatibility and discovery** - the descriptor declares which networks, assets, reference formats, funding rules, release rules, and dispute policy an escrow supports, so that agents and swaps can select it
-- **service schema discovery** - the descriptor additionally points to a machine-readable schema that defines the callable escrow contract
+- **service schema discovery** - the descriptor additionally points to a machine-readable schema
 
 A descriptor that omits the `service` block is sufficient for compatibility and discovery and for use inside Pontmore swap flows where the swap state machine in [PIP-02-swap-state-machine.md](./PIP-02-swap-state-machine.md) carries public execution state.
 
-A descriptor that includes a `service` block does not make PIP-01 the source of truth for invocation behavior. The descriptor only advertises where the invocation schema is found and what schema language it uses. Clients MUST validate the referenced schema before treating the escrow as directly callable.
+A descriptor that includes a `service` block does not make PIP-01 the source of truth for service behavior. PIP-01 only declares `service.schema`. Clients MUST validate the referenced schema before relying on any service behavior.
 
 ## Service Schema
 
-The optional `service` content field points to the machine-readable schema that defines the callable escrow interface.
+The optional `service` content field contains only the service schema pointer.
 
-When `service` is present, it MUST include:
+When `service` is present, it MUST contain only:
 
 - `schema`
   - object containing the service schema pointer
@@ -86,7 +86,7 @@ Initial PIP-01 schema types are intentionally limited to:
 
 ### Schema Requirements
 
-The referenced schema MUST define the full callable interface, including:
+The referenced schema MUST define all service behavior, including:
 
 - transport or protocol
 - endpoint or server information
@@ -111,7 +111,7 @@ The schema URL:
 
 Clients SHOULD use bounded fetches, redirect limits, content-type checks, and response-size limits when retrieving schemas.
 
-Clients MAY reject unsupported schema types, unsupported schema-language versions, unsafe schema URLs, mutable schema URLs, or schemas whose callable interface does not match the client's trust and capability requirements.
+Clients MAY reject unsupported schema types, unsupported schema-language versions, unsafe schema URLs, mutable schema URLs, or schemas that do not match the client's trust and capability requirements.
 
 ## Public/Private Boundary
 
@@ -315,9 +315,9 @@ Every agent profile should declare:
 
 That declared escrow must be usable without out-of-band negotiation at swap time.
 
-For direct service invocation, an application SHOULD select a descriptor whose `service.schema.type` is supported, whose `service.schema.url` passes fetch-safety checks, and whose referenced schema matches the application's supported capabilities and trust constraints.
+For service use, an application SHOULD select a descriptor whose `service.schema.type` is supported, whose `service.schema.url` passes fetch-safety checks, and whose referenced schema matches the application's supported capabilities and trust constraints.
 
-A descriptor without `service.schema` MUST NOT be treated as directly callable solely from PIP-01.
+A descriptor without `service.schema` provides no PIP-01 service schema pointer.
 
 ## Open Questions
 
