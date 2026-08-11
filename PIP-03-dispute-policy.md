@@ -6,6 +6,7 @@
 - Implementation: Required
 - Scope: operator-layer dispute and timeout policy for Nostr-native swaps
 - Related:
+  - [PIP-01-escrow-descriptor.md](./PIP-01-escrow-descriptor.md)
   - [PIP-02-swap-state-machine.md](./PIP-02-swap-state-machine.md)
 
 ## Purpose
@@ -42,7 +43,7 @@ Each timeout class MUST bind to exactly one non-`mutual_consent` fallback resolu
 - payment proof timeout -> confirming the agent claim
 - payout timeout -> confirming the customer claim
 - resolution timeout -> escalating to manual review
-- refund-trigger timeout -> the descriptor-declared fallback resolution from [PIP-01-escrow-descriptor.md](./PIP-01-escrow-descriptor.md)
+- refund-trigger timeout -> the descriptor- or schema-declared fallback resolution referenced by [PIP-01-escrow-descriptor.md](./PIP-01-escrow-descriptor.md)
 
 ## Evidence Categories
 
@@ -68,7 +69,7 @@ An operator may resolve disputes by:
 
 ### Timeout Fallback
 
-A timeout class (for example `resolution timeout` or an escrow's `refund_trigger` such as `timeout_requires_mutual_consent`) MUST NOT leave the escrow in a permanent deadlock where neither participant will consent and no other resolution path is defined. When a timeout elapses, the operator MUST resolve the swap using the fallback resolution bound to that timeout class; a `mutual_consent`-only path with no fallback is not a valid terminal policy. The escrow descriptor referenced by the swap MUST declare the applicable fallback resolution for every timeout class it advertises, and compatibility validation MUST use that explicit binding rather than inferring a fallback from the trigger name alone (see the Refund-Trigger Fallback section of [PIP-01-escrow-descriptor.md](./PIP-01-escrow-descriptor.md)).
+A timeout class (for example `resolution timeout` or an escrow's `refund_trigger` such as `timeout_requires_mutual_consent`) MUST NOT leave the escrow in a permanent deadlock where neither participant will consent and no other resolution path is defined. When a timeout elapses, the operator MUST resolve the swap using the fallback resolution bound to that timeout class; a `mutual_consent`-only path with no fallback is not a valid terminal policy. The escrow descriptor or referenced service schema MUST declare the applicable fallback resolution for every timeout class it advertises, and compatibility validation MUST use that explicit binding rather than inferring a fallback from the trigger name alone (see [PIP-01-escrow-descriptor.md](./PIP-01-escrow-descriptor.md)).
 
 ## Public-Protocol Boundary
 
