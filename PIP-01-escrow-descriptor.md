@@ -50,6 +50,44 @@ Minimum expected fields:
 - `dispute_rules`
 - `reference_format`
 - `updated_at`
+- `status` (optional, defaults to `active`)
+
+## Lifecycle State
+
+### `status`
+
+- string, one of `active` (default) or `disabled`
+- when omitted, the descriptor is treated as `active`
+
+When `status` is `disabled`:
+
+- `disabled_at` — integer, unix timestamp, REQUIRED
+- `disabled_reason` — string, free-form short text, OPTIONAL
+- `replacement` — OPTIONAL object
+  - `replacement.coordinate` — string, Nostr addressable coordinate (`kind:pubkey:d-tag`)
+  - `replacement.note` — OPTIONAL short human-readable note
+
+A disabled descriptor MUST still carry the same `version`, `escrow_type`, `networks`, `funding_rules`, `dispute_rules`, `reference_format`, and `updated_at` it had while active. Disabling does not strip content.
+
+Operators SHOULD publish the disabled state as a replacement event at the same addressable coordinate. Operators MAY also publish a NIP-09 deletion request, but clients MUST treat `status` as the canonical usability signal. A disabled descriptor is not a deletion — it remains resolvable and auditable.
+
+### `expires_at`
+
+- integer, unix timestamp, OPTIONAL
+- a descriptor is only selectable while the current time is less than `expires_at`
+- to keep a descriptor active without republishing changed content, the operator MUST republish with a fresh `updated_at` and `expires_at` before expiry (liveness heartbeat)
+
+`expires_at` and `status: "disabled"` are independent: `status` is an explicit withdrawal, `expires_at` is a passive abandonment guard. If both are present, disabled wins — an explicitly disabled descriptor MUST NOT be kept alive by republishing `expires_at`.
+
+### Selection Rules
+
+- Clients MUST NOT select a descriptor with `status: "disabled"` or past `expires_at`.
+- Clients MAY show disabled or expired descriptors for audit and history when referenced by past escrow operations.
+- Clients MUST re-resolve a cached descriptor and honor a later disabled status.
+- Clients SHOULD treat a cached descriptor as stale if `expires_at` has elapsed.
+- Agent/operator discovery documents SHOULD stop referencing disabled descriptors.
+
+A descriptor becoming disabled or expired does not retroactively invalidate any escrow operations that referenced it while active. For Pontmore swap flows, a stalled escrow mid-swap is handled by [PIP-02](./PIP-02-swap-state-machine.md) and [PIP-03](./PIP-03-dispute-policy.md).
 
 ## Descriptor Use Levels
 
@@ -214,7 +252,8 @@ Examples include:
       "url": "https://escrow.example.com/pontmore-escrow.openapi.json"
     }
   },
-  "updated_at": 1775559028
+  "updated_at": 1775559028,
+  "expires_at": 1775645428
 }
 ```
 
@@ -259,9 +298,42 @@ Every agent profile should declare:
 
 That declared escrow must be usable without out-of-band negotiation at swap time.
 
+An agent SHOULD NOT list a disabled descriptor as the default escrow. If the default becomes disabled, the agent SHOULD publish an updated agent definition pointing at an active descriptor.
+
 For service use, an application SHOULD select a descriptor whose `service.schema.type` is supported, whose `service.schema.url` passes fetch-safety checks, and whose referenced schema matches the application's supported capabilities and trust constraints.
 
 A descriptor without `service.schema` provides no PIP-01 service schema pointer.
+
+## Disabled Descriptor Example
+
+```json
+{
+  "version": 1,
+  "escrow_type": "custodial_escrow",
+  "networks": ["bitcoin", "lightning"],
+  "funding_rules": {
+    "funding_threshold": 1,
+    "participant_count": 1
+  },
+  "dispute_rules": {
+    "policy": "pip03"
+  },
+  "reference_format": "bolt11_or_custodial_escrow_reference",
+  "service": {
+    "schema": {
+      "type": "openapi",
+      "url": "https://escrow.example.com/pontmore-escrow.openapi.json"
+    }
+  },
+  "updated_at": 1775559028,
+  "status": "disabled",
+  "disabled_at": 1775645428,
+  "disabled_reason": "rotating to new descriptor coordinate",
+  "replacement": {
+    "coordinate": "30361:<operator-pubkey>:default-v2"
+  }
+}
+```
 
 ## Open Questions
 
@@ -273,3 +345,9 @@ A descriptor without `service.schema` provides no PIP-01 service schema pointer.
 
 3. **Custodial accountability references**
    - Should `custodial_escrow` descriptors advertise a public accountability reference, such as proof of reserve, attestation, or collateral, without leaking operator-private implementation details?
+
+4. **Standard disable-reason vocabulary**
+   - Should PIP-01 define a standard set of disable reasons, or leave `disabled_reason` application-specific?
+
+5. **Mandated descriptor expiry**
+   - Should `expires_at` be required, or remain optional so operators can choose set-and-forget descriptors at the cost of no passive abandonment guard?
